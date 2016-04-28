@@ -13,10 +13,11 @@ headn() {
 nozero() {
 	local DATA=
 	hex | while true; do
-		if ! IFS='' read -r -n 2 DATA; then
+		if ! read -rn 2 DATA; then
 			break
 		fi
 
+		# Sacrificing randomness!
 		if [ "$DATA" = "00" ]; then
 			DATA=01
 		fi
@@ -32,7 +33,7 @@ hex() {
 dehex() {
 	local DATA=
 	while true; do
-		if ! IFS='' read -r -n 2 DATA; then
+		if ! read -rn 2 DATA; then
 			break
 		fi
 
@@ -136,8 +137,8 @@ xor() {
 	local PAD="$2"
 
 	while true; do
-		IFS='' read -r -n 2 PAD_BYTE < "$PAD"
-		if ! IFS='' read -r -n 2 DATA_BYTE < "$DATA"; then
+		read -rn 2 PAD_BYTE < "$PAD"
+		if ! read -rn 2 DATA_BYTE < "$DATA"; then
 			break
 		fi
 		printf %02x $((0x$DATA_BYTE ^ 0x$PAD_BYTE))
@@ -148,7 +149,19 @@ hmac() {
 	local HMAC_KEY="$1"
 
 	if [[ "$(openssl version)" = "OpenSSL 0."* ]]; then
-		openssl dgst -sha1 -hmac "$(echo -n $HMAC_KEY | dehex)"
+		echo -n "$HMAC_KEY" | while true; do
+			local HMAC_CHAR=
+			if ! read -rn 2 HMAC_CHAR; then
+				break
+			fi
+			if [ "$HMAC_CHAR" = "00" ]; then
+				echo "WARNING: null byte found in HMAC key, digest will fail" >&2
+				echo "Update to OpenSSL 1.0 or later to support this key" >&2
+				break
+			fi
+		done
+		IFS='' read -rd '' HMAC_KEY < <(echo -n "$HMAC_KEY" | dehex)
+		openssl dgst -sha1 -hmac "$HMAC_KEY"
 	else
 		openssl dgst -sha1 -mac HMAC -macopt "hexkey:$HMAC_KEY"
 	fi |
@@ -289,7 +302,7 @@ case "$SUBCOMMAND" in
 
 			write_be32 5 # hmac key field
 			write_be32 "$HMAC_KEY_LEN"
-			# OpenSSL on OS X (0.9.8) doesn't support null characters in hmac keys
+			# OpenSSL on OS X (0.9.8) doesn't support null bytes in hmac keys
 			openssl rand "$HMAC_KEY_LEN" | nozero
 
 			write_be32 0 # end
