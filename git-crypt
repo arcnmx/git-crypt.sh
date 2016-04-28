@@ -1,0 +1,278 @@
+#!/bin/bash
+set -eu
+set -o pipefail
+
+hex() {
+	od -An -vtx1 | tr -d ' ' | tr -d '\n'
+}
+
+dehex() {
+	local DATA=
+	while true; do
+		if ! read -r -N 2 DATA; then
+			break
+		fi
+
+		printf "\\x$DATA"
+	done
+}
+
+read_be32() {
+	VALUE=$(head -c 4 | hex)
+	echo $((0x$VALUE))
+}
+
+write_be32() {
+	VALUE="$1"
+	printf %08x "$VALUE" | dehex
+}
+
+parse_key() {
+	local HMAC_KEY_LEN=64
+	local AES_KEY_LEN=32
+	local FIELD_ID=
+	local FIELD_LEN=
+
+	if [ $(head -c $KEY_HEADER_LEN | hex) != "$KEY_HEADER" ]; then
+		echo "Malformed header, expected \\0GITCRYPTKEY" >&2
+		return 1
+	fi
+
+	if [ $(read_be32) -ne 2 ]; then
+		echo "Wrong key version, expected 2" >&2
+		return 1
+	fi
+
+	if [ $(read_be32) -ne 0 ]; then
+		echo "Bad key, expected empty entry" >&2
+		return 1
+	fi
+
+	while true; do
+		FIELD_ID=$(read_be32)
+		if [ "$FIELD_ID" -eq 0 ]; then # end
+			break
+		fi
+
+		FIELD_LEN=$(read_be32)
+
+		case $FIELD_ID in
+			1) # version
+				head -c $FIELD_LEN > /dev/null # dump into the ether
+				;;
+			3) # AES key
+				if [ $FIELD_LEN -ne $AES_KEY_LEN ]; then
+					echo "Wrong AES key len" >&2
+					return 1
+				fi
+				AES_KEY=$(head -c $FIELD_LEN | hex)
+				;;
+			5) # HMAC key
+				if [ $FIELD_LEN -ne $HMAC_KEY_LEN ]; then
+					echo "Wrong HMAC key len" >&2
+					return 1
+				fi
+				HMAC_KEY=$(head -c $FIELD_LEN | hex)
+				;;
+			*)
+				if [ $((FIELD_ID & 1)) -eq 1 ]; then
+					echo "Unknown field ID" >&2
+					return 1
+				else
+					echo "WARNING: unknown benign field ID" >&2
+					if [ $FIELD_LEN -gt $((1<<20)) ]; then
+						echo "Malformed field" >&2
+						return 1
+					fi
+					head -c $FIELD_LEN > /dev/null # dump into the ether
+				fi
+				;;
+		esac
+	done
+
+	if [ -z "$AES_KEY" -o -z "$HMAC_KEY" ]; then
+		echo "Key file did not contain required keys" >&2
+		return 1
+	fi
+}
+
+padgen() {
+	local KEY="$1"
+	local NONCE="$2"
+	local counter=0
+	{
+		while true; do
+			echo -n $NONCE | dehex
+			write_be32 $counter
+			counter=$((counter+1))
+			# TODO: check for 32bit overflow
+		done
+	} | openssl enc -aes-256-ecb -nosalt -K "$KEY" 2>/dev/null
+}
+
+xor() {
+	local DATA="$1"
+	local PAD="$2"
+
+	while true; do
+		read -r -N 2 PAD_BYTE < "$PAD"
+		if ! read -r -N 2 DATA_BYTE < "$DATA"; then
+			break
+		fi
+		printf %02x $((0x$DATA_BYTE ^ 0x$PAD_BYTE))
+	done | dehex
+}
+
+hmac() {
+	local HMAC_KEY="$1"
+
+	openssl dgst -sha1 -mac HMAC -macopt "hexkey:$HMAC_KEY" \
+		| cut -d ' ' -f 2- \
+		| head -c $((NONCE_LEN*2))
+}
+
+tmpdir() {
+	TEMPDIR=$(mktemp -d "${TMPDIR:-/tmp}"/git-crypt.XXXXXXXX)
+	cleanup() {
+		rm -rf "$TEMPDIR"
+	}
+	trap cleanup EXIT
+}
+
+git_config_filters() {
+	git config filter.git-crypt.required true
+	git config filter.git-crypt.smudge "$0 smudge"
+	git config filter.git-crypt.clean "$0 clean"
+	git config diff.git-crypt.textconv "$0 diff"
+}
+
+COMMAND="$1"
+shift
+KEY_FILE="$(git rev-parse --git-dir)/git-crypt/keys/default"
+
+KEY_HEADER="0047495443525950544b4559"
+DATA_HEADER="00474954435259505400"
+DATA_HEADER_LEN=10
+NONCE_LEN=12
+
+case "$COMMAND" in
+	smudge | diff) # decrypt
+		if [ ! $# -lt 1 ]; then
+			exec < "$1"
+		fi
+
+		HEADER=$(head -c $DATA_HEADER_LEN | hex)
+		if [ "$HEADER" != "$DATA_HEADER" ]; then
+			echo "WARNING: file should be encrypted but isn't" >&2
+			echo -n "$HEADER" | dehex
+			cat
+		else
+			tmpdir
+			FIFO="$TEMPDIR/fifo"
+			mkfifo "$FIFO"
+
+			parse_key < "$KEY_FILE"
+
+			NONCE=$(head -c $NONCE_LEN | hex)
+			(
+				HASH=$(hmac "$HMAC_KEY")
+				[ "$HASH" = "$NONCE" ]
+			) < "$FIFO" &
+			HASH_PID=$!
+
+			xor \
+				<(hex) \
+				<(padgen "$AES_KEY" "$NONCE" | hex) \
+				| tee "$FIFO"
+
+			if ! wait "$HASH_PID"; then
+				echo "HASH MISMATCH, FILE TAMPERED" >&2
+				exit 1
+			fi
+		fi
+		;;
+	clean)
+		if [ ! $# -lt 1 ]; then
+			exec < "$1"
+		fi
+
+		parse_key < "$KEY_FILE"
+
+		tmpdir
+		TEMP="$TEMPDIR/data"
+		cat > "$TEMP"
+		NONCE=$(hmac "$HMAC_KEY" < "$TEMP")
+
+		echo -n "$DATA_HEADER" | dehex
+		echo -n $NONCE | dehex
+		xor \
+			<(hex < "$TEMP") \
+			<(padgen "$AES_KEY" "$NONCE" | hex)
+		;;
+	unlock)
+		GIT_STATUS="$(git status --untracked-files=no --porcelain 2>/dev/null | tail -n 1)"
+		if [ -n "$GIT_STATUS" ]; then
+			echo "git worktree is not clean, aborting" >&2
+			exit 1
+		fi
+
+		if [ ! $# -lt 1 ]; then
+			echo "key file must be specified for unlock" >&2
+			exit 1
+		fi
+
+		KEY="$1"
+
+		parse_key < "$KEY"
+
+		mkdir -p "$(dirname "$KEY_FILE")"
+		cat "$KEY" > "$KEY_FILE"
+
+		git_config_filters
+
+		# TODO: will break on paths with spaces...
+		FILES=$(git ls-files | git check-attr --stdin filter | grep 'git-crypt$' | cut -d : -f 1)
+		for file in $FILES; do
+			touch "$file"
+		done
+		git checkout -- $FILES
+		;;
+	init)
+		if [ -e "$KEY_FILE" ]; then
+			echo "Already initialized, aborting" >&2
+			exit 1
+		fi
+
+		mkdir -p "$(dirname "$KEY_FILE")"
+		{
+			echo -n "$KEY_HEADER" | dehex
+			write_be32 2 # version
+			write_be32 0 # empty entry for some reason..?
+
+			write_be32 1 # version field
+			write_be32 4 # version 4
+
+			write_be32 3 # aes key field
+			write_be32 "$AES_KEY_LEN"
+			openssl rand "$AES_KEY_LEN"
+
+			write_be32 5 # hmac key field
+			write_be32 "$HMAC_KEY_LEN"
+			openssl rand "$HMAC_KEY_LEN"
+
+			write_be32 0 # end
+		} > "$KEY_FILE"
+
+		git_config_filters
+		;;
+	export-key)
+		if [ ! $# -lt 1 ]; then
+			cat "$KEY_FILE"
+		else
+			cat "$KEY_FILE" > "$1"
+		fi
+	*)
+		echo "Unknown subcommand" >&2
+		exit 1
+		;;
+esac

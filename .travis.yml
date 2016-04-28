@@ -1,0 +1,6 @@
+language: c
+os: linux
+
+script:
+    - (git clone https://github.com/AGWA/git-crypt.git "$HOME/git-crypt" && cd "$HOME/git-crypt" && make && make install PREFIX=$PWD)
+    - env PATH="$PATH:$HOME/git-crypt/bin" ./test.sh
