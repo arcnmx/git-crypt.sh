@@ -73,6 +73,6 @@ run() {
 }
 
 echo "# git-crypt -> git-crypt.sh"
-run system script
+(run system script)
 echo "# git-crypt.sh -> git-crypt"
-run script system
+(run script system)
