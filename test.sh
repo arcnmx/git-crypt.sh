@@ -2,13 +2,14 @@
 set -eu
 
 ORIG_PATH="$PATH"
+REPO_PATH="$PWD"
 
 switch_system() {
 	export PATH="$ORIG_PATH"
 }
 
 switch_script() {
-	export PATH="$PWD:$ORIG_PATH"
+	export PATH="$REPO_PATH:$ORIG_PATH"
 }
 
 git-cat-noconv() {

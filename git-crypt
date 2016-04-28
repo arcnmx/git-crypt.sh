@@ -10,6 +10,21 @@ headn() {
 	# head -c "$LEN"
 }
 
+nozero() {
+	local DATA=
+	hex | while true; do
+		if ! IFS='' read -r -n 2 DATA; then
+			break
+		fi
+
+		if [ "$DATA" = "00" ]; then
+			DATA=01
+		fi
+
+		printf "\\x$DATA"
+	done
+}
+
 hex() {
 	od -An -vtx1 | tr -d ' ' | tr -d '\n'
 }
@@ -132,9 +147,13 @@ xor() {
 hmac() {
 	local HMAC_KEY="$1"
 
-	openssl dgst -sha1 -mac HMAC -macopt "hexkey:$HMAC_KEY" \
-		| cut -d ' ' -f 2- \
-		| headn $((NONCE_LEN*2))
+	if [[ "$(openssl version)" = "OpenSSL 0."* ]]; then
+		openssl dgst -sha1 -hmac "$(echo -n $HMAC_KEY | dehex)"
+	else
+		openssl dgst -sha1 -mac HMAC -macopt "hexkey:$HMAC_KEY"
+	fi |
+		cut -d ' ' -f 2- |
+		headn $((NONCE_LEN*2))
 }
 
 tmpdir() {
@@ -147,15 +166,16 @@ tmpdir() {
 
 git_config_filters() {
 	git config filter.git-crypt.required true
-	git config filter.git-crypt.smudge "$0 smudge"
-	git config filter.git-crypt.clean "$0 clean"
-	git config diff.git-crypt.textconv "$0 diff"
+	git config filter.git-crypt.smudge "$COMMAND smudge"
+	git config filter.git-crypt.clean "$COMMAND clean"
+	git config diff.git-crypt.textconv "$COMMAND diff"
 }
 
-COMMAND="$1"
+COMMAND="$0"
+SUBCOMMAND="$1"
 shift
-KEY_FILE="$(git rev-parse --git-dir)/git-crypt/keys/default"
 
+KEY_FILE="$(git rev-parse --git-dir)/git-crypt/keys/default"
 KEY_HEADER="0047495443525950544b4559"
 DATA_HEADER="00474954435259505400"
 DATA_HEADER_LEN=10
@@ -164,7 +184,7 @@ NONCE_LEN=12
 HMAC_KEY_LEN=64
 AES_KEY_LEN=32
 
-case "$COMMAND" in
+case "$SUBCOMMAND" in
 	smudge | diff) # decrypt
 		if [ ! $# -lt 1 ]; then
 			exec < "$1"
@@ -225,7 +245,7 @@ case "$COMMAND" in
 			exit 1
 		fi
 
-		if [ ! $# -lt 1 ]; then
+		if [ $# -lt 1 ]; then
 			echo "key file must be specified for unlock" >&2
 			exit 1
 		fi
@@ -269,7 +289,8 @@ case "$COMMAND" in
 
 			write_be32 5 # hmac key field
 			write_be32 "$HMAC_KEY_LEN"
-			openssl rand "$HMAC_KEY_LEN"
+			# OpenSSL on OS X (0.9.8) doesn't support null characters in hmac keys
+			openssl rand "$HMAC_KEY_LEN" | nozero
 
 			write_be32 0 # end
 		} > "$KEY_FILE"
