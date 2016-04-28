@@ -155,9 +155,9 @@ hmac() {
 				break
 			fi
 			if [ "$HMAC_CHAR" = "00" ]; then
-				echo "WARNING: null byte found in HMAC key, digest will fail" >&2
+				echo "ERROR: null byte found in HMAC key, digest will fail" >&2
 				echo "Update to OpenSSL 1.0 or later to support this key" >&2
-				break
+				exit 1
 			fi
 		done
 		IFS='' read -rd '' HMAC_KEY < <(echo -n "$HMAC_KEY" | dehex)
