@@ -48,7 +48,7 @@ run() {
 	}
 	trap cleanup EXIT
 	cd "$DIR_INIT"
-	git init
+	git init -q
 	git-crypt init
 	echo "$DATA" > file1
 	echo "$DATA" > file2
@@ -64,7 +64,7 @@ run() {
 	switch_$SWITCH_2
 
 	cd "$DIR_CLONE"
-	git clone "$DIR_INIT" .
+	git clone -q "$DIR_INIT" .
 	assert "file1 not encrypted" inv cmp -s file1 <(echo "$DATA")
 	assert "file2 differs" cmp -s file2 <(echo "$DATA")
 	git-crypt unlock "$DIR_INIT/key"
