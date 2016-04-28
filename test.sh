@@ -40,8 +40,8 @@ run() {
 
 	switch_$SWITCH_1
 
-	DIR_INIT=$(mktemp -d)
-	DIR_CLONE=$(mktemp -d)
+	DIR_INIT=$(mktemp -d "${TMPDIR:-/tmp}"/git-crypt.XXXXXXXX)
+	DIR_CLONE=$(mktemp -d "${TMPDIR:-/tmp}"/git-crypt.XXXXXXXX)
 	DATA=$(openssl rand -hex 1000)
 	cleanup() {
 		rm -rf "$DIR_INIT" "$DIR_CLONE"
