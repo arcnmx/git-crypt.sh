@@ -2,6 +2,14 @@
 set -eu
 set -o pipefail
 
+headn() {
+	LEN="$1"
+
+	# head on OS X buffers the read and overreads from stdin
+	dd bs="$LEN" count=1 2>/dev/null
+	# head -c "$LEN"
+}
+
 hex() {
 	od -An -vtx1 | tr -d ' ' | tr -d '\n'
 }
@@ -18,7 +26,7 @@ dehex() {
 }
 
 read_be32() {
-	VALUE=$(head -c 4 | hex)
+	VALUE=$(headn 4 | hex)
 	echo $((0x$VALUE))
 }
 
@@ -31,7 +39,7 @@ parse_key() {
 	local FIELD_ID=
 	local FIELD_LEN=
 
-	if [ $(head -c $KEY_HEADER_LEN | hex) != "$KEY_HEADER" ]; then
+	if [ $(headn $KEY_HEADER_LEN | hex) != "$KEY_HEADER" ]; then
 		echo "Malformed header, expected \\0GITCRYPTKEY" >&2
 		return 1
 	fi
@@ -56,21 +64,21 @@ parse_key() {
 
 		case $FIELD_ID in
 			1) # version
-				head -c $FIELD_LEN > /dev/null # dump into the ether
+				headn $FIELD_LEN > /dev/null # dump into the ether
 				;;
 			3) # AES key
 				if [ $FIELD_LEN -ne $AES_KEY_LEN ]; then
 					echo "Wrong AES key len" >&2
 					return 1
 				fi
-				AES_KEY=$(head -c $FIELD_LEN | hex)
+				AES_KEY=$(headn $FIELD_LEN | hex)
 				;;
 			5) # HMAC key
 				if [ $FIELD_LEN -ne $HMAC_KEY_LEN ]; then
 					echo "Wrong HMAC key len" >&2
 					return 1
 				fi
-				HMAC_KEY=$(head -c $FIELD_LEN | hex)
+				HMAC_KEY=$(headn $FIELD_LEN | hex)
 				;;
 			*)
 				if [ $((FIELD_ID & 1)) -eq 1 ]; then
@@ -82,7 +90,7 @@ parse_key() {
 						echo "Malformed field" >&2
 						return 1
 					fi
-					head -c $FIELD_LEN > /dev/null # dump into the ether
+					headn $FIELD_LEN > /dev/null # dump into the ether
 				fi
 				;;
 		esac
@@ -126,7 +134,7 @@ hmac() {
 
 	openssl dgst -sha1 -mac HMAC -macopt "hexkey:$HMAC_KEY" \
 		| cut -d ' ' -f 2- \
-		| head -c $((NONCE_LEN*2))
+		| headn $((NONCE_LEN*2))
 }
 
 tmpdir() {
@@ -162,7 +170,7 @@ case "$COMMAND" in
 			exec < "$1"
 		fi
 
-		HEADER=$(head -c $DATA_HEADER_LEN | hex)
+		HEADER=$(headn $DATA_HEADER_LEN | hex)
 		if [ "$HEADER" != "$DATA_HEADER" ]; then
 			echo "WARNING: file should be encrypted but isn't" >&2
 			echo -n "$HEADER" | dehex
@@ -174,7 +182,7 @@ case "$COMMAND" in
 
 			parse_key < "$KEY_FILE"
 
-			NONCE=$(head -c $NONCE_LEN | hex)
+			NONCE=$(headn $NONCE_LEN | hex)
 			(
 				HASH=$(hmac "$HMAC_KEY")
 				[ "$HASH" = "$NONCE" ]
