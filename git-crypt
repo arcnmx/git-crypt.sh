@@ -102,7 +102,7 @@ parse_key() {
 					return 1
 				else
 					echo "WARNING: unknown benign field ID" >&2
-					if [[ $FIELD_LEN -gt $(( 1 << 20)) ]]; then
+					if [[ $FIELD_LEN -gt 1048576 ]]; then # 1 << 20
 						echo "Malformed field" >&2
 						return 1
 					fi
