@@ -53,12 +53,15 @@ run() {
 	git-crypt init
 	echo "$DATA" > file1
 	echo "$DATA" > file2
+	mkdir dir1 && echo "$DATA" > "dir1/has space"
 	echo '/file1 filter=git-crypt diff=git-crypt' > .gitattributes
-	git add file1 file2 .gitattributes
+	echo '/dir1/* filter=git-crypt diff=git-crypt' >> .gitattributes
+	git add file1 file2 "dir1/has space" .gitattributes
 	git config user.name "no one"
 	git config user.email "ghost@konpa.ku"
 	git commit -qm "some data"
 	assert "file1 not encrypted" inv cmp -s <(git-cat-noconv file1) file1
+	assert "dir1 not encrypted" inv cmp -s <(git-cat-noconv "dir1/has space") "dir1/has space"
 	assert "file2 differs" cmp -s <(git-cat-noconv file2) file2
 	git-crypt export-key "$DIR_INIT/key"
 
@@ -67,9 +70,11 @@ run() {
 	cd "$DIR_CLONE"
 	git clone -q "$DIR_INIT" .
 	assert "file1 not encrypted" inv cmp -s file1 <(echo "$DATA")
+	assert "dir1 not encrypted" inv cmp -s "dir1/has space" <(echo "$DATA")
 	assert "file2 differs" cmp -s file2 <(echo "$DATA")
 	git-crypt unlock "$DIR_INIT/key"
 	assert "file1 differs" cmp -s file1 <(echo "$DATA")
+	assert "dir1 differs" cmp -s "dir1/has space" <(echo "$DATA")
 	assert "file2 differs" cmp -s file2 <(echo "$DATA")
 }
 
