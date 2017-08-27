@@ -273,12 +273,16 @@ case "$SUBCOMMAND" in
 
 		git_config_filters
 
-		# TODO: will break on paths with spaces...
-		FILES=$(git ls-files | git check-attr --stdin filter | grep 'git-crypt$' | cut -d : -f 1)
-		for file in $FILES; do
-			touch "$file"
-		done
-		git checkout -- $FILES
+		FILES=()
+		while IFS= read -r -d '' file; do
+			IFS= read -r -d '' filter # ignore attribute name, always "filter"
+			IFS= read -r -d '' filter
+			if [[ $filter = git-crypt ]]; then
+				FILES+=("$file")
+			fi
+		done < <(git ls-files -z | git check-attr -z --stdin filter)
+		touch -c ${FILES[@]+"${FILES[@]}"}
+		git checkout -- ${FILES[@]+"${FILES[@]}"}
 		;;
 	init)
 		if [[ -e "$KEY_FILE" ]]; then
